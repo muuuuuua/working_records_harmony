@@ -1,24 +1,29 @@
 import { relationalStore } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
-import { MonthSummary, WorkRecord } from '../model/WorkRecord';
+import { MonthSummary, WorkDefaults, WorkRecord } from '../model/WorkRecord';
 
 const STORE_CONFIG: relationalStore.StoreConfig = {
-  name: 'hourly_work.db',
+  name: 'hourly_work_v2.db',
   securityLevel: relationalStore.SecurityLevel.S1
 };
 
 const CREATE_TABLE = `CREATE TABLE IF NOT EXISTS work_record (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   work_date TEXT NOT NULL,
-  start_time TEXT NOT NULL,
-  end_time TEXT NOT NULL,
-  break_minutes INTEGER NOT NULL DEFAULT 0,
+  period TEXT NOT NULL DEFAULT '上午',
+  hours REAL NOT NULL DEFAULT 0,
   hourly_rate REAL NOT NULL DEFAULT 0,
   note TEXT NOT NULL DEFAULT '',
-  work_minutes INTEGER NOT NULL DEFAULT 0,
   wage REAL NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
+)`;
+
+const CREATE_DEFAULTS_TABLE = `CREATE TABLE IF NOT EXISTS work_defaults (
+  id INTEGER PRIMARY KEY,
+  period TEXT NOT NULL,
+  hours REAL NOT NULL,
+  hourly_rate REAL NOT NULL
 )`;
 
 export class WorkRecordStore {
@@ -30,7 +35,13 @@ export class WorkRecordStore {
     }
     this.store = await relationalStore.getRdbStore(context, STORE_CONFIG);
     await this.store.executeSql(CREATE_TABLE);
+    await this.store.executeSql(CREATE_DEFAULTS_TABLE);
     await this.store.executeSql('CREATE INDEX IF NOT EXISTS idx_work_record_date ON work_record(work_date)');
+    await this.store.executeSql(
+      `INSERT OR IGNORE INTO work_defaults (id, period, hours, hourly_rate)
+       SELECT 1, period, hours, hourly_rate
+       FROM work_record ORDER BY created_at DESC, id DESC LIMIT 1`
+    );
   }
 
   private requireStore(): relationalStore.RdbStore {
@@ -42,7 +53,8 @@ export class WorkRecordStore {
 
   async listByMonth(month: string): Promise<WorkRecord[]> {
     const result = await this.requireStore().querySql(
-      'SELECT * FROM work_record WHERE work_date LIKE ? ORDER BY work_date DESC, start_time DESC',
+      `SELECT * FROM work_record WHERE work_date LIKE ?
+       ORDER BY work_date DESC, CASE period WHEN '上午' THEN 0 ELSE 1 END`,
       [`${month}%`]
     );
     const records: WorkRecord[] = [];
@@ -53,32 +65,54 @@ export class WorkRecordStore {
     return records;
   }
 
+  async getDefaults(): Promise<WorkDefaults | undefined> {
+    const result = await this.requireStore().querySql(
+      'SELECT period, hours, hourly_rate FROM work_defaults WHERE id = 1'
+    );
+    let defaults: WorkDefaults | undefined = undefined;
+    if (result.goToFirstRow()) {
+      defaults = {
+        period: result.getString(result.getColumnIndex('period')),
+        hours: result.getDouble(result.getColumnIndex('hours')),
+        hourlyRate: result.getDouble(result.getColumnIndex('hourly_rate'))
+      };
+    }
+    result.close();
+    return defaults;
+  }
+
   async insert(record: WorkRecord): Promise<number> {
     const now = Date.now();
     const values: relationalStore.ValuesBucket = {
       'work_date': record.workDate,
-      'start_time': record.startTime,
-      'end_time': record.endTime,
-      'break_minutes': record.breakMinutes,
+      'period': record.period,
+      'hours': record.hours,
       'hourly_rate': record.hourlyRate,
       'note': record.note,
-      'work_minutes': record.workMinutes,
       'wage': record.wage,
       'created_at': now,
       'updated_at': now
     };
-    return await this.requireStore().insert('work_record', values);
+    const rowId = await this.requireStore().insert('work_record', values);
+    try {
+      await this.requireStore().executeSql(
+        `INSERT OR REPLACE INTO work_defaults
+         (id, period, hours, hourly_rate) VALUES (1, ?, ?, ?)`,
+        [record.period, record.hours, record.hourlyRate]
+      );
+    } catch (error) {
+      console.error(`Failed to save work defaults: ${(error as Error).message}`);
+    }
+    return rowId;
   }
 
   async update(record: WorkRecord): Promise<number> {
     const values: relationalStore.ValuesBucket = {
       'work_date': record.workDate,
-      'start_time': record.startTime,
-      'end_time': record.endTime,
-      'break_minutes': record.breakMinutes,
+      'period': record.period,
+      'hours': record.hours,
       'hourly_rate': record.hourlyRate,
       'note': record.note,
-      'work_minutes': record.workMinutes,
       'wage': record.wage,
       'updated_at': Date.now()
     };
@@ -96,7 +130,7 @@ export class WorkRecordStore {
   async summary(month: string): Promise<MonthSummary> {
     const result = await this.requireStore().querySql(
       `SELECT COUNT(DISTINCT work_date) AS days,
-       COALESCE(SUM(work_minutes), 0) AS total_minutes,
+       ROUND(COALESCE(SUM(hours), 0) * 60) AS total_minutes,
        COALESCE(SUM(wage), 0) AS total_wage,
        COALESCE(AVG(hourly_rate), 0) AS average_rate
        FROM work_record WHERE work_date LIKE ?`,
@@ -116,15 +150,15 @@ export class WorkRecordStore {
   }
 
   private readRecord(result: relationalStore.ResultSet): WorkRecord {
+    const hours = result.getDouble(result.getColumnIndex('hours'));
     return {
       id: result.getLong(result.getColumnIndex('id')),
       workDate: result.getString(result.getColumnIndex('work_date')),
-      startTime: result.getString(result.getColumnIndex('start_time')),
-      endTime: result.getString(result.getColumnIndex('end_time')),
-      breakMinutes: result.getLong(result.getColumnIndex('break_minutes')),
+      period: result.getString(result.getColumnIndex('period')),
+      hours: hours,
       hourlyRate: result.getDouble(result.getColumnIndex('hourly_rate')),
       note: result.getString(result.getColumnIndex('note')),
-      workMinutes: result.getLong(result.getColumnIndex('work_minutes')),
+      workMinutes: Math.round(hours * 60),
       wage: result.getDouble(result.getColumnIndex('wage'))
     };
   }

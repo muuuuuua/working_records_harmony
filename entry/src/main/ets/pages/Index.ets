@@ -2,7 +2,6 @@ import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { workRecordStore } from '../database/WorkRecordStore';
 import {
-  calculateMinutes,
   emptyRecord,
   formatDuration,
   MonthSummary,
@@ -38,7 +37,10 @@ function pad(value: number): string {
 }
 
 function todayText(): string {
-  const date = new Date();
+  return dateText(new Date());
+}
+
+function dateText(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
@@ -56,13 +58,22 @@ function dayTitle(date: string): string {
   return `${Number(parts[1])}月${Number(parts[2])}日`;
 }
 
+function weekDayText(value: string): string {
+  const parts = value.split('-');
+  if (parts.length !== 3) {
+    return '';
+  }
+  const labels: string[] = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+  const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  return labels[date.getDay()];
+}
+
 function cloneRecord(record: WorkRecord): WorkRecord {
   return {
     id: record.id,
     workDate: record.workDate,
-    startTime: record.startTime,
-    endTime: record.endTime,
-    breakMinutes: record.breakMinutes,
+    period: record.period,
+    hours: record.hours,
     hourlyRate: record.hourlyRate,
     note: record.note,
     workMinutes: record.workMinutes,
@@ -93,12 +104,20 @@ function isValidDate(value: string): boolean {
   return parsed.getFullYear() === year && parsed.getMonth() === month - 1 && parsed.getDate() === day;
 }
 
-function isValidTime(value: string): boolean {
-  const parts = value.split(':');
-  if (parts.length !== 2 || !isTwoDigits(parts[0]) || !isTwoDigits(parts[1])) {
-    return false;
+function isValidHoursInput(value: string): boolean {
+  if (value.length === 0) {
+    return true;
   }
-  return Number(parts[0]) <= 23 && Number(parts[1]) <= 59;
+  let decimalIndex = -1;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 46 && decimalIndex < 0) {
+      decimalIndex = index;
+    } else if (code < 48 || code > 57) {
+      return false;
+    }
+  }
+  return decimalIndex < 0 || value.length - decimalIndex - 1 <= 1;
 }
 
 @Entry
@@ -111,6 +130,7 @@ struct Index {
   @State showEditor: boolean = false;
   @State saving: boolean = false;
   @State draft: WorkRecord = emptyRecord(todayText());
+  @State hoursInput: string = '4.0';
   @State errorText: string = '';
 
   aboutToAppear(): void {
@@ -118,6 +138,15 @@ struct Index {
     workRecordStore.init(context)
       .then(() => this.refresh())
       .catch((error: Error) => this.showError(`数据库初始化失败：${error.message}`));
+  }
+
+  onBackPress(): boolean {
+    if (this.showEditor) {
+      this.showEditor = false;
+      this.errorText = '';
+      return true;
+    }
+    return false;
   }
 
   async refresh(): Promise<void> {
@@ -140,27 +169,80 @@ struct Index {
     this.refresh();
   }
 
-  openNew(): void {
+  async openNew(): Promise<void> {
     const today = todayText();
     const date = today.startsWith(this.selectedMonth) ? today : `${this.selectedMonth}-01`;
-    this.draft = emptyRecord(date);
+    const draft = emptyRecord(date);
+    try {
+      const defaults = await workRecordStore.getDefaults();
+      if (defaults) {
+        draft.period = defaults.period;
+        draft.hours = defaults.hours;
+        draft.hourlyRate = defaults.hourlyRate;
+        draft.workMinutes = Math.round(draft.hours * 60);
+        draft.wage = draft.hours * draft.hourlyRate;
+      }
+    } catch (error) {
+      this.showError(`读取上次记录失败：${(error as Error).message}`);
+    }
+    this.draft = draft;
+    this.hoursInput = draft.hours.toFixed(1);
     this.errorText = '';
     this.showEditor = true;
   }
 
   openEdit(record: WorkRecord): void {
     this.draft = cloneRecord(record);
+    this.hoursInput = record.hours.toFixed(1);
     this.errorText = '';
     this.showEditor = true;
   }
 
   updateCalculation(): void {
-    this.draft.workMinutes = calculateMinutes(
-      this.draft.startTime,
-      this.draft.endTime,
-      this.draft.breakMinutes
-    );
-    this.draft.wage = this.draft.workMinutes / 60 * this.draft.hourlyRate;
+    this.draft.workMinutes = Math.round(this.draft.hours * 60);
+    this.draft.wage = this.draft.hours * this.draft.hourlyRate;
+  }
+
+  showDatePicker(): void {
+    let selected = new Date();
+    if (isValidDate(this.draft.workDate)) {
+      const parts = this.draft.workDate.split('-');
+      selected = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    }
+    CalendarPickerDialog.show({
+      selected: selected,
+      markToday: true,
+      onAccept: (value: Date) => {
+        this.draft.workDate = dateText(value);
+        this.errorText = '';
+      }
+    });
+  }
+
+  updateHoursInput(value: string): void {
+    if (!isValidHoursInput(value)) {
+      return;
+    }
+    this.hoursInput = value;
+    const hours = Number(value);
+    if (!Number.isNaN(hours) && hours >= 0) {
+      this.draft.hours = hours;
+      this.updateCalculation();
+    }
+  }
+
+  adjustHours(direction: number): void {
+    const inputValue = Number(this.hoursInput);
+    const current = Number.isNaN(inputValue) ? this.draft.hours : inputValue;
+    let adjusted = 0.5;
+    if (direction > 0) {
+      adjusted = Math.floor(current * 2 + 0.000001) / 2 + 0.5;
+    } else {
+      adjusted = Math.max(0.5, Math.ceil(current * 2 - 0.000001) / 2 - 0.5);
+    }
+    this.draft.hours = Math.round(adjusted * 10) / 10;
+    this.hoursInput = this.draft.hours.toFixed(1);
+    this.updateCalculation();
   }
 
   validate(): boolean {
@@ -168,14 +250,17 @@ struct Index {
       this.errorText = '请输入有效日期，格式为 YYYY-MM-DD';
       return false;
     }
-    if (!isValidTime(this.draft.startTime) || !isValidTime(this.draft.endTime)) {
-      this.errorText = '时间格式应为 HH:mm（例如 09:30）';
+    const inputHours = Number(this.hoursInput);
+    if (Number.isNaN(inputHours) || inputHours <= 0 || inputHours > 24) {
+      this.errorText = '工时请输入大于0且不超过24的数字';
       return false;
     }
-    if (this.draft.breakMinutes < 0 || this.draft.hourlyRate < 0) {
-      this.errorText = '休息时间和时薪不能为负数';
+    if (this.draft.hourlyRate < 0) {
+      this.errorText = '时薪不能为负数';
       return false;
     }
+    this.draft.hours = Math.round(inputHours * 10) / 10;
+    this.hoursInput = this.draft.hours.toFixed(1);
     this.updateCalculation();
     if (this.draft.workMinutes <= 0) {
       this.errorText = '有效工作时长必须大于 0';
@@ -210,7 +295,7 @@ struct Index {
   confirmDelete(record: WorkRecord): void {
     AlertDialog.show({
       title: '删除这条记录？',
-      message: `${record.workDate}  ${record.startTime}–${record.endTime}`,
+      message: `${record.workDate}  ${record.period} ${record.hours.toFixed(1)}小时`,
       primaryButton: {
         value: '取消',
         action: () => {}
@@ -351,7 +436,7 @@ struct Index {
         .onClick(() => this.openNew())
     }
     .width('100%')
-    .padding({ top: 52, bottom: 40 })
+    .padding({ top: 28, bottom: 40 })
   }
 
   @Builder
@@ -363,7 +448,7 @@ struct Index {
             .fontSize(17)
             .fontWeight(FontWeight.Bold)
             .fontColor(COLORS.text)
-          Text(`${record.startTime} – ${record.endTime}  ·  休息${record.breakMinutes}分钟`)
+          Text(`${record.period}  ·  ${record.hours.toFixed(1)}小时`)
             .fontSize(13)
             .fontColor(COLORS.secondary)
         }
@@ -527,49 +612,74 @@ struct Index {
       Scroll() {
         Column({ space: 20 }) {
           Column({ space: 8 }) {
-            this.FieldLabel('工作日期', 'YYYY-MM-DD')
-            TextInput({ text: this.draft.workDate, placeholder: '2026-08-10' })
+            this.FieldLabel('工作日期', '点击选择')
+            Row() {
+              Text(`${this.draft.workDate}  ${weekDayText(this.draft.workDate)}`)
+                .fontSize(16)
+                .fontColor(COLORS.text)
+              Blank()
+              Text('日历  ›')
+                .fontSize(14)
+                .fontColor(COLORS.primary)
+            }
+              .width('100%')
               .height(48)
+              .padding({ left: 14, right: 14 })
               .backgroundColor(Color.White)
               .borderRadius(12)
-              .onChange((value: string) => this.draft.workDate = value)
+              .onClick(() => this.showDatePicker())
+          }
+          Column({ space: 8 }) {
+            this.FieldLabel('工作时段', '选择上午或下午')
+            Row({ space: 8 }) {
+              Button('上午')
+                .layoutWeight(1)
+                .height(44)
+                .fontColor(this.draft.period === '上午' ? Color.White : COLORS.primary)
+                .backgroundColor(this.draft.period === '上午' ? COLORS.primary : COLORS.primarySoft)
+                .borderRadius(12)
+                .onClick(() => this.draft.period = '上午')
+              Button('下午')
+                .layoutWeight(1)
+                .height(44)
+                .fontColor(this.draft.period === '下午' ? Color.White : COLORS.primary)
+                .backgroundColor(this.draft.period === '下午' ? COLORS.primary : COLORS.primarySoft)
+                .borderRadius(12)
+                .onClick(() => this.draft.period = '下午')
+            }
+            .width('100%')
           }
           Row({ space: 12 }) {
             Column({ space: 8 }) {
-              this.FieldLabel('开始时间', 'HH:mm')
-              TextInput({ text: this.draft.startTime, placeholder: '09:00' })
+              this.FieldLabel('工作时长', '小时')
+              Row({ space: 6 }) {
+                TextInput({ text: this.hoursInput, placeholder: '4.0' })
+                  .layoutWeight(1)
+                  .maxLength(4)
+                  .height(48)
+                  .backgroundColor(Color.White)
+                  .borderRadius(12)
+                  .onChange((value: string) => this.updateHoursInput(value))
+                Column() {
+                  Button('▲')
+                    .width(44)
+                    .height(24)
+                    .fontSize(12)
+                    .fontColor(COLORS.primary)
+                    .backgroundColor(COLORS.primarySoft)
+                    .borderRadius({ topLeft: 10, topRight: 10 })
+                    .onClick(() => this.adjustHours(1))
+                  Button('▼')
+                    .width(44)
+                    .height(24)
+                    .fontSize(12)
+                    .fontColor(COLORS.primary)
+                    .backgroundColor(COLORS.primarySoft)
+                    .borderRadius({ bottomLeft: 10, bottomRight: 10 })
+                    .onClick(() => this.adjustHours(-1))
+                }
                 .height(48)
-                .backgroundColor(Color.White)
-                .borderRadius(12)
-                .onChange((value: string) => {
-                  this.draft.startTime = value;
-                  this.updateCalculation();
-                })
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-            Column({ space: 8 }) {
-              this.FieldLabel('结束时间', 'HH:mm')
-              TextInput({ text: this.draft.endTime, placeholder: '17:00' })
-                .height(48)
-                .backgroundColor(Color.White)
-                .borderRadius(12)
-                .onChange((value: string) => {
-                  this.draft.endTime = value;
-                  this.updateCalculation();
-                })
-            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          }
-          Row({ space: 12 }) {
-            Column({ space: 8 }) {
-              this.FieldLabel('休息', '分钟')
-              TextInput({ text: this.draft.breakMinutes.toString(), placeholder: '0' })
-                .type(InputType.Number)
-                .height(48)
-                .backgroundColor(Color.White)
-                .borderRadius(12)
-                .onChange((value: string) => {
-                  this.draft.breakMinutes = Number(value) || 0;
-                  this.updateCalculation();
-                })
+              }
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
             Column({ space: 8 }) {
               this.FieldLabel('时薪', '元/小时')
@@ -594,8 +704,8 @@ struct Index {
           }
           Row() {
             Column({ space: 4 }) {
-              Text('本次有效工时').fontSize(12).fontColor('#D0E7E1')
-              Text(formatDuration(this.draft.workMinutes))
+              Text(`${this.draft.period}工时`).fontSize(12).fontColor('#D0E7E1')
+              Text(`${this.draft.hours.toFixed(1)} 小时`)
                 .fontSize(18)
                 .fontWeight(FontWeight.Bold)
                 .fontColor(Color.White)
@@ -644,11 +754,16 @@ struct Index {
         this.Editor()
       } else {
         Column() {
+          Column({ space: 16 }) {
+            this.MonthSwitcher()
+            this.SummaryHero()
+            this.TabBar()
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 8 })
+
           Scroll() {
-            Column({ space: 16 }) {
-              this.MonthSwitcher()
-              this.SummaryHero()
-              this.TabBar()
+            Column() {
               if (this.selectedTab === 0) {
                 if (this.records.length === 0) {
                   this.EmptyView()
@@ -665,10 +780,13 @@ struct Index {
               Blank().height(88)
             }
             .width('100%')
-            .padding({ left: 16, right: 16, top: 8 })
+            .constraintSize({ minHeight: '100%' })
+            .alignItems(HorizontalAlign.Start)
+            .justifyContent(FlexAlign.Start)
+            .padding({ left: 16, right: 16 })
           }
           .width('100%')
-          .height('100%')
+          .layoutWeight(1)
         }
         .width('100%')
         .height('100%')

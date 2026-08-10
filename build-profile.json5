@@ -1,17 +1,36 @@
 {
   "app": {
-    "signingConfigs": [],
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/bytedance/.ohos/config/default_working_records_harmony_NDcQlRHNVS7s7dGPzjtAve3AA0KMwZ8sSPk7h74rjMs=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001A50BD3F5656F502BA034EEDFABC5416589D8CDB2C460EEAD269CCF6E7EEB0A77F610473110BF8",
+          "profile": "/Users/bytedance/.ohos/config/default_working_records_harmony_NDcQlRHNVS7s7dGPzjtAve3AA0KMwZ8sSPk7h74rjMs=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/bytedance/.ohos/config/default_working_records_harmony_NDcQlRHNVS7s7dGPzjtAve3AA0KMwZ8sSPk7h74rjMs=.p12",
+          "storePassword": "0000001A713A8729C243837A44D348172EB95640D0A9537364006968DC78B1C81ECB5AADD854B11E91C2"
+        }
+      }
+    ],
     "products": [
       {
         "name": "default",
         "signingConfig": "default",
-        "compatibleSdkVersion": "5.0.0(12)",
+        "compatibleSdkVersion": "6.1.0(23)",
+        "targetSdkVersion": "6.1.0(23)",
         "runtimeOS": "HarmonyOS"
       }
     ],
     "buildModeSet": [
-      { "name": "debug" },
-      { "name": "release" }
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
     ]
   },
   "modules": [
@@ -19,7 +38,12 @@
       "name": "entry",
       "srcPath": "./entry",
       "targets": [
-        { "name": "default", "applyToProducts": ["default"] }
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
       ]
     }
   ]
