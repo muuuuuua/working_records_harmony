@@ -1,0 +1,8 @@
+{
+  "modelVersion": "5.0.0",
+  "description": "钟点工工时与工资记录",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hvigor-ohos-plugin": "5.0.2"
+  }
+}

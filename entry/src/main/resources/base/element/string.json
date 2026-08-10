@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "app_name", "value": "工时账本" },
+    { "name": "module_desc", "value": "钟点工工时与工资记录" },
+    { "name": "entryability_desc", "value": "工时账本主页面" },
+    { "name": "entryability_label", "value": "工时账本" }
+  ]
+}
